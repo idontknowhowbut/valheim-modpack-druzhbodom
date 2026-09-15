@@ -32,19 +32,6 @@
 
 На Linux BepInEx launch script запускается прямо из внешнего профиля.
 
-## Уже заданные параметры
-
-```text
-FTP: 185.189.255.48:21
-Remote archive: /Server/BepInEx/BepInEx.zip
-GitHub: idontknowhowbut/valheim-modpack-druzhbodom
-Gale BepInEx:
-%APPDATA%\com.kesomannen.gale\valheim\profiles\Valheim Ochen Nado\BepInEx
-```
-
-`publish.ps1` уже содержит эти значения как defaults.
-
----
 
 # 1. Подготовка GitHub
 
