@@ -1,0 +1,6 @@
+# Admin-only local secrets
+admin/publish.local.ps1
+
+# Optional local build/output files
+*.zip
+*.tmp
