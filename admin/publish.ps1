@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [string]$GaleBepInExPath = (Join-Path $env:APPDATA 'com.kesomannen.gale\valheim\profiles\Valheim Ochen Nado\BepInEx'),
@@ -84,14 +84,52 @@ function Remove-RuntimeFiles([string]$Root) {
 }
 
 function New-Zip([string]$SourceDirectory, [string]$DestinationZip) {
+    # Do not use ZipFile.CreateFromDirectory here. Windows PowerShell/.NET Framework
+    # can store Windows backslashes in ZIP entry names. Linux unzip accepts such
+    # archives only with a warning and returns exit code 1. Build entries manually
+    # and always use the ZIP-standard forward slash as the path separator.
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+
     Remove-IfExists $DestinationZip
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $SourceDirectory,
+
+    $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path
+    $sourceRoot = $sourceRoot.TrimEnd([char[]]@([char]92, [char]47))
+
+    $stream = [System.IO.File]::Open(
         $DestinationZip,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
     )
+
+    try {
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $stream,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+
+        try {
+            Get-ChildItem -LiteralPath $sourceRoot -Recurse -Force -File | ForEach-Object {
+                $relativePath = $_.FullName.Substring($sourceRoot.Length).TrimStart([char[]]@([char]92, [char]47))
+                $entryName = $relativePath.Replace([char]92, [char]47)
+
+                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $archive,
+                    $_.FullName,
+                    $entryName,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                ) | Out-Null
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
 }
 
 function Get-Sha256([string]$Path) {
@@ -127,7 +165,7 @@ function Upload-FtpFile(
     [string]$RemotePath,
     [System.Management.Automation.PSCredential]$Credential
 ) {
-    $remote = $RemotePath.Replace('\\', '/').TrimStart('/')
+    $remote = $RemotePath.Replace([char]92, [char]47).TrimStart([char]47)
     $uri = [Uri]("ftp://{0}:{1}/{2}" -f $HostName, $Port, $remote)
 
     $request = [System.Net.FtpWebRequest]::Create($uri)
@@ -223,26 +261,148 @@ function New-GitHubDraftRelease(
     return Invoke-RestMethod @params
 }
 
-function Upload-GitHubReleaseAsset([string]$Repo, [string]$Token, [long]$ReleaseId, [string]$Path) {
+function Get-GitHubReleaseAssets([string]$Repo, [string]$Token, [long]$ReleaseId) {
+    $headers = Get-GitHubHeaders $Token
+    return @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/$ReleaseId/assets?per_page=100" -Method Get -Headers $headers)
+}
+
+function Remove-GitHubReleaseAsset([string]$Repo, [string]$Token, [long]$AssetId) {
+    $headers = Get-GitHubHeaders $Token
+    Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/assets/$AssetId" -Method Delete -Headers $headers | Out-Null
+}
+
+function Remove-StaleGitHubReleaseAsset(
+    [string]$Repo,
+    [string]$Token,
+    [long]$ReleaseId,
+    [string]$AssetName,
+    [long]$ExpectedSize
+) {
+    $assets = Get-GitHubReleaseAssets -Repo $Repo -Token $Token -ReleaseId $ReleaseId
+    foreach ($asset in $assets) {
+        if ([string]$asset.name -ne $AssetName) {
+            continue
+        }
+
+        if ([string]$asset.state -eq 'uploaded' -and [long]$asset.size -eq $ExpectedSize) {
+            Write-Host ("Asset {0} is already uploaded ({1} bytes)." -f $AssetName, $ExpectedSize) -ForegroundColor Green
+            return $true
+        }
+
+        Write-Warning ("Removing incomplete GitHub asset '{0}' (state={1}, size={2})." -f $asset.name, $asset.state, $asset.size)
+        Remove-GitHubReleaseAsset -Repo $Repo -Token $Token -AssetId ([long]$asset.id)
+    }
+
+    return $false
+}
+
+function Get-WebExceptionDetails([System.Management.Automation.ErrorRecord]$ErrorRecord) {
+    $status = $null
+    $body = $null
+
+    try {
+        if ($ErrorRecord.Exception.Response) {
+            $status = [int]$ErrorRecord.Exception.Response.StatusCode
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                try {
+                    $body = $reader.ReadToEnd()
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+        }
+    }
+    catch {}
+
+    if ($status -and $body) {
+        return "HTTP $status - $body"
+    }
+    if ($status) {
+        return "HTTP $status"
+    }
+    return $ErrorRecord.Exception.Message
+}
+
+function Upload-GitHubReleaseAsset(
+    [string]$Repo,
+    [string]$Token,
+    [long]$ReleaseId,
+    [string]$Path,
+    [int]$MaxAttempts = 4
+) {
     $headers = Get-GitHubHeaders $Token
     $file = Get-Item -LiteralPath $Path
-    $name = [Uri]::EscapeDataString($file.Name)
-    $uri = "https://uploads.github.com/repos/$Repo/releases/$ReleaseId/assets?name=$name"
+    $encodedName = [Uri]::EscapeDataString($file.Name)
+    $uri = "https://uploads.github.com/repos/$Repo/releases/$ReleaseId/assets?name=$encodedName"
     $sizeMiB = [Math]::Round($file.Length / 1MB, 2)
 
-    Write-Host ("Uploading {0} ({1} MiB) to GitHub..." -f $file.Name, $sizeMiB) -ForegroundColor Cyan
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        # A failed GitHub upload can leave an empty/starter asset behind. Remove it
+        # before retrying, otherwise GitHub rejects another upload with the same name.
+        $alreadyUploaded = Remove-StaleGitHubReleaseAsset `
+            -Repo $Repo `
+            -Token $Token `
+            -ReleaseId $ReleaseId `
+            -AssetName $file.Name `
+            -ExpectedSize $file.Length
 
-    $params = @{
-        Uri = $uri
-        Method = 'Post'
-        Headers = $headers
-        ContentType = 'application/octet-stream'
-        InFile = $Path
-        UseBasicParsing = $true
+        if ($alreadyUploaded) {
+            return
+        }
+
+        if ($attempt -eq 1) {
+            Write-Host ("Uploading {0} ({1} MiB) to GitHub..." -f $file.Name, $sizeMiB) -ForegroundColor Cyan
+        }
+        else {
+            Write-Host ("Retry {0}/{1}: uploading {2} ({3} MiB)..." -f $attempt, $MaxAttempts, $file.Name, $sizeMiB) -ForegroundColor Yellow
+        }
+
+        try {
+            $params = @{
+                Uri = $uri
+                Method = 'Post'
+                Headers = $headers
+                ContentType = 'application/octet-stream'
+                InFile = $Path
+                UseBasicParsing = $true
+                TimeoutSec = 900
+            }
+            Invoke-WebRequest @params | Out-Null
+
+            Write-Host ("Uploaded {0}." -f $file.Name) -ForegroundColor Green
+            return
+        }
+        catch {
+            $details = Get-WebExceptionDetails $_
+            Write-Warning ("GitHub upload attempt {0}/{1} failed for {2}: {3}" -f $attempt, $MaxAttempts, $file.Name, $details)
+
+            # GitHub documents that an upstream upload failure may leave an asset in
+            # the 'starter' state. Give the API a moment, then clean it before retry.
+            Start-Sleep -Seconds 2
+            try {
+                [void](Remove-StaleGitHubReleaseAsset `
+                    -Repo $Repo `
+                    -Token $Token `
+                    -ReleaseId $ReleaseId `
+                    -AssetName $file.Name `
+                    -ExpectedSize $file.Length)
+            }
+            catch {
+                Write-Warning ("Could not inspect/clean failed asset before retry: {0}" -f $_.Exception.Message)
+            }
+
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            $delay = [Math]::Min(15, 2 * $attempt)
+            Write-Host "Waiting $delay seconds before retry..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds $delay
+        }
     }
-    Invoke-WebRequest @params | Out-Null
-
-    Write-Host ("Uploaded {0}." -f $file.Name) -ForegroundColor Green
 }
 
 function Publish-GitHubRelease([string]$Repo, [string]$Token, [long]$ReleaseId) {
@@ -466,9 +626,9 @@ try {
     }
 
     Write-Host ''
-    Write-Host 'Загрузка успешна.' -ForegroundColor Green
+    Write-Host 'Upload successful.' -ForegroundColor Green
     if (-not $NoFinalPause) {
-        Read-Host 'Нажмите Enter для выхода' | Out-Null
+        Read-Host 'Press Enter to exit' | Out-Null
     }
 }
 finally {
