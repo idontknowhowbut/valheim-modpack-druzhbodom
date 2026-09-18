@@ -2,6 +2,16 @@
 # DRUZHBODOM_UPDATER_SELFUPDATE_V1
 set -euo pipefail
 
+# Steam launch options run this script inside Steam's runtime environment.
+# That environment injects its own LD_LIBRARY_PATH / LD_PRELOAD, which can make
+# system tools (notably curl) load Steam's bundled libraries and fail with
+# errors such as CURL_OPENSSL_4 not found. Preserve the Steam values for the
+# eventual game launch, but keep the updater itself on the system libraries.
+: "${DRUZHBODOM_STEAM_LD_LIBRARY_PATH:=${LD_LIBRARY_PATH-}}"
+: "${DRUZHBODOM_STEAM_LD_PRELOAD:=${LD_PRELOAD-}}"
+export DRUZHBODOM_STEAM_LD_LIBRARY_PATH DRUZHBODOM_STEAM_LD_PRELOAD
+unset LD_LIBRARY_PATH LD_PRELOAD
+
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
@@ -429,6 +439,18 @@ chmod u+x "$BEPINEX_LAUNCHER"
 
 step 'Starting Valheim with the external BepInEx profile'
 if ((STEAM_MODE)); then
+  # Restore Steam's runtime environment only for the actual game launch.
+  if [[ -n "${DRUZHBODOM_STEAM_LD_LIBRARY_PATH:-}" ]]; then
+    export LD_LIBRARY_PATH="$DRUZHBODOM_STEAM_LD_LIBRARY_PATH"
+  else
+    unset LD_LIBRARY_PATH
+  fi
+  if [[ -n "${DRUZHBODOM_STEAM_LD_PRELOAD:-}" ]]; then
+    export LD_PRELOAD="$DRUZHBODOM_STEAM_LD_PRELOAD"
+  else
+    unset LD_PRELOAD
+  fi
+
   # Preferred Linux integration:
   # Steam launch options: "/absolute/path/update.sh" --steam %command%
   exec "$BEPINEX_LAUNCHER" "${STEAM_ARGS[@]}"
