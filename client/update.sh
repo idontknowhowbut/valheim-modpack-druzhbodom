@@ -80,6 +80,31 @@ need_cmd curl
 need_cmd unzip
 need_cmd sha256sum
 
+# Info-ZIP unzip returns exit code 1 for non-fatal warnings. Older releases of
+# our publisher created Windows-style ZIP entry names with backslashes, which
+# triggers exactly that warning on Linux even though extraction succeeds.
+# Accept rc=1 so existing releases remain installable; rc>1 is a real error.
+extract_zip() {
+  local archive="$1"
+  local destination="$2"
+  local overwrite="${3:-0}"
+  local rc=0
+
+  if ((overwrite)); then
+    unzip -qo "$archive" -d "$destination" || rc=$?
+  else
+    unzip -q "$archive" -d "$destination" || rc=$?
+  fi
+
+  if ((rc > 1)); then
+    die "Failed to extract ZIP (unzip exit code $rc): $archive"
+  fi
+
+  if ((rc == 1)); then
+    echo 'WARNING: ZIP was extracted with a non-fatal warning; continuing.' >&2
+  fi
+}
+
 self_update() {
   ((SKIP_SELF_UPDATE)) && return 0
 
@@ -323,7 +348,7 @@ install_profile() {
   mkdir -p "$staging"
 
   step 'Extracting new profile'
-  unzip -q "$archive" -d "$staging"
+  extract_zip "$archive" "$staging"
 
   if [[ "$ADDONS" == *"low-spec"* ]]; then
     command -v python3 >/dev/null 2>&1 || die 'python3 is required when the low-spec addon is enabled.'
@@ -342,7 +367,7 @@ install_profile() {
     [[ "$addon_actual_sha" == "$addon_sha" ]] || die "Addon low-spec SHA256 mismatch. Expected $addon_sha, got $addon_actual_sha"
 
     step 'Merging addon into profile: low-spec'
-    unzip -qo "$addon_archive" -d "$staging"
+    extract_zip "$addon_archive" "$staging" 1
   fi
 
   [[ -f "$staging/BepInEx/core/BepInEx.Preloader.dll" ]] || die 'Downloaded profile has no BepInEx/core/BepInEx.Preloader.dll'
