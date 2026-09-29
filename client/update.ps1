@@ -32,6 +32,30 @@ function Ensure-StateRoot {
     New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
 }
 
+
+function Remove-StaleTempArtifacts {
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    $cutoff = (Get-Date).AddHours(-24)
+
+    $patterns = @(
+        'druzhbodom-update-*',
+        'druzhbodom-update-self-*.ps1'
+    )
+
+    foreach ($pattern in $patterns) {
+        Get-ChildItem -LiteralPath $tempRoot -Filter $pattern -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff } |
+            ForEach-Object {
+                try {
+                    Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                }
+                catch {
+                    # Stale temp cleanup is best-effort and must never block launch.
+                }
+            }
+    }
+}
+
 function Select-Folder([string]$Description, [string]$InitialDirectory) {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -542,6 +566,7 @@ function Start-ModdedValheim([object]$Config) {
     }
 }
 
+Remove-StaleTempArtifacts
 Invoke-SelfUpdate
 
 $config = Get-LauncherConfig
@@ -580,6 +605,10 @@ try {
     }
 
     if (-not $NoLaunch) {
+        Write-Step 'Cleaning temporary updater files'
+        if (Test-Path -LiteralPath $tempDir) {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Start-ModdedValheim $config
     }
 }
