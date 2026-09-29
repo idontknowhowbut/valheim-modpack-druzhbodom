@@ -90,6 +90,18 @@ need_cmd curl
 need_cmd unzip
 need_cmd sha256sum
 
+# Clean up stale updater files left by older launcher versions, crashes, or
+# forced Steam termination. Only remove our own temp entries older than 24h,
+# so a concurrently running updater is never touched.
+cleanup_stale_tmp() {
+  local tmp_root="${TMPDIR:-/tmp}"
+  find "$tmp_root" -maxdepth 1 -mindepth 1 -uid "$(id -u)" \
+    \( -name 'druzhbodom-update.*' -o -name 'druzhbodom-self-update.*.sh' \) \
+    -mmin +1440 -exec rm -rf -- {} + 2>/dev/null || true
+}
+
+cleanup_stale_tmp
+
 # Info-ZIP unzip returns exit code 1 for non-fatal warnings. Older releases of
 # our publisher created Windows-style ZIP entry names with backslashes, which
 # triggers exactly that warning on Linux even though extraction succeeds.
@@ -317,7 +329,9 @@ PY
 
 TEMP_DIR="$(mktemp -d -t druzhbodom-update.XXXXXX)"
 cleanup() {
-  rm -rf "$TEMP_DIR"
+  if [[ -n "${TEMP_DIR:-}" && -e "$TEMP_DIR" ]]; then
+    rm -rf -- "$TEMP_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -436,6 +450,14 @@ find_bepinex_launcher() {
 BEPINEX_LAUNCHER="$(find_bepinex_launcher || true)"
 [[ -n "$BEPINEX_LAUNCHER" ]] || die 'BepInEx Linux launch script not found in the profile.'
 chmod u+x "$BEPINEX_LAUNCHER"
+
+# A successful exec replaces this shell, so Bash does not get a normal EXIT
+# path where we can rely on the EXIT trap. Remove downloaded manifest/ZIPs now
+# before handing the process over to BepInEx/Valheim. The trap remains useful
+# for all updater errors and --no-launch exits.
+step 'Cleaning temporary updater files'
+cleanup
+trap - EXIT
 
 step 'Starting Valheim with the external BepInEx profile'
 if ((STEAM_MODE)); then
