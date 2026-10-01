@@ -33,49 +33,8 @@
 На Linux BepInEx launch script запускается прямо из внешнего профиля.
 
 
-# 1. Подготовка GitHub
 
-Создать публичный репозиторий:
-
-```text
-idontknowhowbut/valheim-modpack-druzhbodom
-```
-
-Для admin publisher нужен GitHub token с правом создавать Releases в этом репозитории. Для fine-grained PAT достаточно выдать этому репозиторию `Contents: Read and write`.
-
-## Локальные секреты администратора
-
-В `admin/` есть файл `publish.local.ps1`. Заполни его один раз:
-
-```powershell
-@{
-    FtpUser     = 'YOUR_FTP_LOGIN'
-    FtpPassword = 'YOUR_FTP_PASSWORD'
-    GitHubToken = 'github_pat_...'
-}
-```
-
-Этот файл включён в `.gitignore` и **не должен попадать в публичный GitHub-репозиторий**.
-В репозитории можно хранить `publish.local.example.ps1` как безопасный шаблон.
-
-Приоритет GitHub token такой:
-
-1. параметр `-GitHubToken`;
-2. переменная окружения `GITHUB_TOKEN`;
-3. `GitHubToken` из `publish.local.ps1`;
-4. интерактивный запрос.
-
-Для FTP приоритет такой:
-
-1. параметр `-FtpCredential`;
-2. `FtpUser` + `FtpPassword` из `publish.local.ps1`;
-3. интерактивный `Get-Credential`.
-
-То есть после заполнения локального файла обычный запуск `publish.ps1` больше не спрашивает ни FTP-креды, ни GitHub token.
-
----
-
-# 2. Публикация новой версии
+# 1. Публикация новой версии
 
 Запускать на Windows, где установлен Gale и находится профиль:
 
